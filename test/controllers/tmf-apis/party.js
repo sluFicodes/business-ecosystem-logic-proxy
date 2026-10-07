@@ -79,10 +79,17 @@ describe('Party API', function() {
         updateBody: function(req, body) {return ;}
     };
 
-    const buildPartyAPI = (conf, phone) => {
+    const buildPartyAPI = (conf, phone, operatorId) => {
         const tmfUtils = {
             isValidPhoneNumber: function(_) {
                 return phone;
+            }
+        };
+        const operator = {
+            operator: {
+                getOperatorId: function() {
+                    return operatorId;
+                }
             }
         };
         return proxyquire('../../../controllers/tmf-apis/party', {
@@ -90,6 +97,7 @@ describe('Party API', function() {
             './../../lib/logger': testUtils.emptyLogger,
             './../../lib/utils': utils,
             './../../lib/tmfUtils': tmfUtils,
+            './../../lib/operator': operator
         }).party;
     }
 
@@ -168,14 +176,14 @@ describe('Party API', function() {
                     nock(catalogServer)
                         .get(config.endpoints.catalog.apiPath + '/productOffering')
                         .query({
-                            'relatedParty.id': 'org-1',
+                            'relatedParty.id': 'org-accept',
                             lifecycleStatus: 'Launched',
                             limit: '1'
                         })
                         .reply(200, [{ id: 'offering-1' }]);
 
                     paginationConfig.predicate({
-                        id: 'org-1'
+                        id: 'org-accept'
                     }).then(function(result) {
                         expect(result).toBe(true);
                         done();
@@ -200,16 +208,117 @@ describe('Party API', function() {
                     nock(catalogServer)
                         .get(config.endpoints.catalog.apiPath + '/productOffering')
                         .query({
-                            'relatedParty.id': 'org-1',
+                            'relatedParty.id': 'org-reject',
                             lifecycleStatus: 'Launched',
                             limit: '1'
                         })
                         .reply(200, []);
 
                     paginationConfig.predicate({
-                        id: 'org-1'
+                        id: 'org-reject'
                     }).then(function(result) {
                         expect(result).toBe(false);
+                        done();
+                    }).catch(done.fail);
+                });
+            });
+
+            it('should reject the marketplace operator without checking catalog offers', function(done) {
+                const partyLib = buildPartyAPI(config, true, 'org-operator');
+                var req = {
+                    method: 'GET',
+                    apiUrl: '/party/organization?lifecycleStatus=Launched&limit=2',
+                    query: {
+                        lifecycleStatus: 'Launched',
+                        limit: '2'
+                    }
+                };
+
+                partyLib.checkPermissions(req, function(err) {
+                    expect(err).toBe(null);
+                    const paginationConfig = partyLib.getFilteredPaginationConfig(req);
+
+                    paginationConfig.predicate({
+                        id: 'org-operator'
+                    }).then(function(result) {
+                        expect(result).toBe(false);
+                        expect(nock.pendingMocks()).toEqual([]);
+                        done();
+                    }).catch(done.fail);
+                });
+            });
+
+            it('should cache accepted organization offer checks', function(done) {
+                var req = {
+                    method: 'GET',
+                    apiUrl: '/party/organization?lifecycleStatus=Launched&limit=2',
+                    query: {
+                        lifecycleStatus: 'Launched',
+                        limit: '2'
+                    }
+                };
+
+                partyAPI.checkPermissions(req, function(err) {
+                    expect(err).toBe(null);
+                    const paginationConfig = partyAPI.getFilteredPaginationConfig(req);
+
+                    const scope = nock(catalogServer)
+                        .get(config.endpoints.catalog.apiPath + '/productOffering')
+                        .query({
+                            'relatedParty.id': 'org-cache-accept',
+                            lifecycleStatus: 'Launched',
+                            limit: '1'
+                        })
+                        .reply(200, [{ id: 'offering-1' }]);
+
+                    paginationConfig.predicate({
+                        id: 'org-cache-accept'
+                    }).then(function(firstResult) {
+                        expect(firstResult).toBe(true);
+                        return paginationConfig.predicate({
+                            id: 'org-cache-accept'
+                        });
+                    }).then(function(secondResult) {
+                        expect(secondResult).toBe(true);
+                        expect(scope.isDone()).toBe(true);
+                        done();
+                    }).catch(done.fail);
+                });
+            });
+
+            it('should cache rejected organization offer checks', function(done) {
+                var req = {
+                    method: 'GET',
+                    apiUrl: '/party/organization?lifecycleStatus=Launched&limit=2',
+                    query: {
+                        lifecycleStatus: 'Launched',
+                        limit: '2'
+                    }
+                };
+
+                partyAPI.checkPermissions(req, function(err) {
+                    expect(err).toBe(null);
+                    const paginationConfig = partyAPI.getFilteredPaginationConfig(req);
+
+                    const scope = nock(catalogServer)
+                        .get(config.endpoints.catalog.apiPath + '/productOffering')
+                        .query({
+                            'relatedParty.id': 'org-cache-reject',
+                            lifecycleStatus: 'Launched',
+                            limit: '1'
+                        })
+                        .reply(200, []);
+
+                    paginationConfig.predicate({
+                        id: 'org-cache-reject'
+                    }).then(function(firstResult) {
+                        expect(firstResult).toBe(false);
+                        return paginationConfig.predicate({
+                            id: 'org-cache-reject'
+                        });
+                    }).then(function(secondResult) {
+                        expect(secondResult).toBe(false);
+                        expect(scope.isDone()).toBe(true);
                         done();
                     }).catch(done.fail);
                 });

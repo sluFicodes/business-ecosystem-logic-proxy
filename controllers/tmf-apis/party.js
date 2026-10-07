@@ -22,17 +22,23 @@
 const async = require('async')
 const axios = require('axios')
 const config = require('./../../config')
+const LRU = require('lru-cache')
 const url = require('url')
 const utils = require('./../../lib/utils')
 const logger = require('./../../lib/logger').logger.getLogger('TMF')
 const tmfUtils = require('./../../lib/tmfUtils')
 const partyClient = require('./../../lib/party').partyClient
+const operatorClient = require('./../../lib/operator').operator
 
 
 const party = (function() {
     const LIFE_CYCLE = 'lifecycleStatus'
     const LAUNCHED_STATE = 'launched'
     const launchedOrganizationOfferFilter = '_launchedOrganizationOfferFilter'
+    const launchedOfferCache = new LRU({
+        max: 1000,
+        maxAge: 1000 * 60 * 5
+    })
     const organizationListPattern = new RegExp(
         '^/' + config.endpoints.party.path + '/organization/?$'
     )
@@ -102,6 +108,23 @@ const party = (function() {
             return Promise.resolve(false)
         }
 
+        const operatorId = operatorClient.getOperatorId()
+        if (operatorId && organizationId === operatorId) {
+            logger.debug('Organization launched-offer filter rejected organization: marketplace operator')
+            return Promise.resolve(false)
+        }
+
+        const cachedHasOffers = launchedOfferCache.get(organizationId)
+
+        if (cachedHasOffers != null) {
+            logger.debug(
+                'Organization launched-offer filter cache hit for organization ' +
+                organizationId +
+                ': hasLaunchedOffers=' + cachedHasOffers
+            )
+            return Promise.resolve(cachedHasOffers)
+        }
+
         const offersPath = '/productOffering?relatedParty.id=' +
             encodeURIComponent(organizationId) +
             '&lifecycleStatus=Launched&limit=1'
@@ -110,6 +133,7 @@ const party = (function() {
 
         return retrieveCatalogAsset(offersPath).then((result) => {
             const hasOffers = Array.isArray(result.body) && result.body.length > 0
+            launchedOfferCache.set(organizationId, hasOffers)
 
             logger.debug(
                 'Organization launched-offer filter ' + (hasOffers ? 'accepted' : 'rejected') +
